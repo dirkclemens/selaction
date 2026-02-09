@@ -2,11 +2,14 @@
 #include <QClipboard>
 #include <QCursor>
 #include <QDesktopServices>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMimeData>
 #include <QProcess>
 #include <QElapsedTimer>
 #include <QRegularExpression>
@@ -15,10 +18,12 @@
 #include <QTimer>
 #include <QUrl>
 #include <QDebug>
-#include <QVBoxLayout>
-#include <QListWidget>
-#include <QListWidgetItem>
+#include <QGridLayout>
 #include <QKeyEvent>
+#include <QStyle>
+#include <QToolButton>
+#include <QtGlobal>
+#include <cstdio>
 #include <functional>
 
 namespace {
@@ -27,12 +32,14 @@ struct ExternalAction {
     QString label;
     QString command;
     QStringList args;
+    QString icon;
 };
 
 struct MenuAction {
     QString label;
     std::function<void()> handler;
     bool enabled = true;
+    QString icon;
 };
 
 struct AppSettings {
@@ -40,6 +47,8 @@ struct AppSettings {
     int pollIntervalMs = 1500;
     bool wlPasteEnabled = false;
     QString wlPasteMode = "primary";
+    int actionIconsPerRow = 10;
+    QString logLevel = "info";
 };
 
 QString normalizeWhitespace(const QString &text) {
@@ -93,6 +102,7 @@ QList<ExternalAction> loadExternalActions() {
         for (const QJsonValue &arg : obj.value("args").toArray()) {
             action.args.append(arg.toString());
         }
+        action.icon = obj.value("icon").toString();
         actions.append(action);
     }
 
@@ -158,6 +168,29 @@ AppSettings loadSettings() {
             settings.wlPasteMode = mode;
         }
     }
+    if (obj.contains("icons_per_row")) {
+        const QJsonValue value = obj.value("icons_per_row");
+        int parsed = settings.actionIconsPerRow;
+        if (value.isString()) {
+            bool ok = false;
+            parsed = value.toString().toInt(&ok);
+            if (!ok) {
+                parsed = settings.actionIconsPerRow;
+            }
+        } else {
+            parsed = value.toInt(settings.actionIconsPerRow);
+        }
+        if (parsed > 0) {
+            settings.actionIconsPerRow = parsed;
+        }
+    }
+    if (obj.contains("log_level")) {
+        const QJsonValue value = obj.value("log_level");
+        const QString level = value.toString(settings.logLevel).toLower();
+        if (!level.isEmpty()) {
+            settings.logLevel = level;
+        }
+    }
 
     qInfo() << "Loaded settings from" << configPath;
     return settings;
@@ -180,11 +213,59 @@ QString readWlPaste(const QStringList &args, int timeoutMs, bool *ok) {
     return QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
 }
 
+int logLevelFromString(const QString &level) {
+    const QString normalized = level.trimmed().toLower();
+    if (normalized == "debug") {
+        return 0;
+    }
+    if (normalized == "warning" || normalized == "warn") {
+        return 2;
+    }
+    if (normalized == "critical" || normalized == "error") {
+        return 3;
+    }
+    if (normalized == "fatal") {
+        return 4;
+    }
+    return 1;
+}
+
+int gMinLogLevel = 1;
+QtMessageHandler gPrevLogHandler = nullptr;
+
+int logSeverity(QtMsgType type) {
+    switch (type) {
+        case QtDebugMsg:
+            return 0;
+        case QtInfoMsg:
+            return 1;
+        case QtWarningMsg:
+            return 2;
+        case QtCriticalMsg:
+            return 3;
+        case QtFatalMsg:
+            return 4;
+    }
+    return 1;
+}
+
+void logHandler(QtMsgType type, const QMessageLogContext &context, const QString &message) {
+    if (logSeverity(type) < gMinLogLevel) {
+        return;
+    }
+    if (gPrevLogHandler) {
+        gPrevLogHandler(type, context, message);
+        return;
+    }
+    const QByteArray bytes = message.toLocal8Bit();
+    std::fprintf(stderr, "%s\n", bytes.constData());
+}
+
 class PopupController : public QObject {
     Q_OBJECT
 
 public:
-    explicit PopupController(QObject *parent = nullptr)
+    explicit PopupController(const AppSettings &settings, QObject *parent = nullptr)
         : QObject(parent) {
         clipboard_ = QGuiApplication::clipboard();
         qInfo() << "Clipboard available:" << (clipboard_ != nullptr);
@@ -197,30 +278,31 @@ public:
         debounce_.setInterval(120);
         connect(&debounce_, &QTimer::timeout, this, &PopupController::showMenuIfNeeded);
 
-        AppSettings settings = loadSettings();
+        AppSettings effective = settings;
         if (qEnvironmentVariableIsSet("CODEXPOPCLIP_POLL")) {
-            settings.pollEnabled = true;
+            effective.pollEnabled = true;
         }
         if (qEnvironmentVariableIsSet("CODEXPOPCLIP_POLL_MS")) {
             const int value = qEnvironmentVariableIntValue("CODEXPOPCLIP_POLL_MS");
             if (value > 0) {
-                settings.pollIntervalMs = value;
+                effective.pollIntervalMs = value;
             }
         }
         if (qEnvironmentVariableIsSet("CODEXPOPCLIP_WLPASTE")) {
-            settings.wlPasteEnabled = true;
+            effective.wlPasteEnabled = true;
         }
         if (qEnvironmentVariableIsSet("CODEXPOPCLIP_WLPASTE_MODE")) {
-            const QString mode = qEnvironmentVariable("CODEXPOPCLIP_WLPASTE_MODE", settings.wlPasteMode);
+            const QString mode = qEnvironmentVariable("CODEXPOPCLIP_WLPASTE_MODE", effective.wlPasteMode);
             if (!mode.isEmpty()) {
-                settings.wlPasteMode = mode;
+                effective.wlPasteMode = mode;
             }
         }
 
-        pollEnabled_ = settings.pollEnabled;
-        pollIntervalMs_ = settings.pollIntervalMs;
-        wlPasteEnabled_ = settings.wlPasteEnabled;
-        wlPasteMode_ = settings.wlPasteMode;
+        pollEnabled_ = effective.pollEnabled;
+        pollIntervalMs_ = effective.pollIntervalMs;
+        wlPasteEnabled_ = effective.wlPasteEnabled;
+        wlPasteMode_ = effective.wlPasteMode;
+        popup_.setActionIconsPerRow(effective.actionIconsPerRow);
         traceEnabled_ = qEnvironmentVariableIsSet("CODEXPOPCLIP_TRACE");
         if (pollEnabled_) {
             pollTimer_.setInterval(pollIntervalMs_);
@@ -303,53 +385,31 @@ private:
             setAttribute(Qt::WA_ShowWithoutActivating, false);
             setFocusPolicy(Qt::StrongFocus);
 
-            list_ = new QListWidget(this);
-            list_->setSelectionMode(QAbstractItemView::SingleSelection);
-            list_->setUniformItemSizes(true);
-            list_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-            list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-
-            auto *layout = new QVBoxLayout(this);
-            layout->setContentsMargins(6, 6, 6, 6);
-            layout->addWidget(list_);
-
-            connect(list_, &QListWidget::itemActivated, this, &ActionPopup::onItemTriggered);
-            connect(list_, &QListWidget::itemClicked, this, &ActionPopup::onItemTriggered);
+            grid_ = new QGridLayout(this);
+            grid_->setContentsMargins(6, 6, 6, 6);
+            grid_->setSpacing(4);
+            setLayout(grid_);
         }
 
         void setOnClosed(std::function<void()> handler) {
             onClosed_ = std::move(handler);
         }
 
+        void setActionIconsPerRow(int count) {
+            actionIconsPerRow_ = qMax(1, count);
+        }
+
         void setContent(const QString &selectedText, const QList<MenuAction> &actions) {
+            Q_UNUSED(selectedText);
             actions_ = actions;
-            list_->clear();
-
-            auto *header = new QListWidgetItem(selectedText, list_);
-            header->setFlags(Qt::NoItemFlags);
-
-            auto *separator = new QListWidgetItem("----------------", list_);
-            separator->setFlags(Qt::NoItemFlags);
-
-            int actionIndex = 0;
+            visibleActions_.clear();
             for (const MenuAction &action : actions_) {
-                auto *item = new QListWidgetItem(action.label, list_);
-                if (!action.enabled) {
-                    item->setFlags(Qt::NoItemFlags);
-                } else {
-                    item->setData(Qt::UserRole, actionIndex);
+                if (action.enabled) {
+                    visibleActions_.append(action);
                 }
-                actionIndex++;
             }
-
-            if (!actions_.isEmpty()) {
-                list_->setCurrentRow(2);
-            }
-            const int rowCount = list_->count();
-            const int rowHeight = list_->sizeHintForRow(0) > 0 ? list_->sizeHintForRow(0) : 20;
-            const int listHeight = (rowHeight * rowCount) + (2 * list_->frameWidth());
-            list_->setFixedHeight(listHeight);
-            adjustSize();
+            currentPage_ = 0;
+            rebuildGrid();
         }
 
         void showAtCursor() {
@@ -373,7 +433,7 @@ private:
             if (showTimer_.isValid() && showTimer_.elapsed() < 200) {
                 return;
             }
-            if (underMouse() || list_->underMouse()) {
+            if (underMouse()) {
                 return;
             }
             hide();
@@ -395,30 +455,194 @@ private:
         }
 
     private:
-        void onItemTriggered(QListWidgetItem *item) {
-            if (!item) {
-                return;
+        void rebuildGrid() {
+            while (QLayoutItem *item = grid_->takeAt(0)) {
+                if (item->widget()) {
+                    item->widget()->deleteLater();
+                }
+                delete item;
             }
-            const QVariant actionIndexVariant = item->data(Qt::UserRole);
-            if (!actionIndexVariant.isValid()) {
-                return;
+
+            const int totalActions = visibleActions_.size();
+            const bool needsPaging = totalActions > actionIconsPerRow_;
+            const int slotsPerPage = qMax(1, actionIconsPerRow_);
+            const int totalPages = needsPaging ? ((totalActions + slotsPerPage - 1) / slotsPerPage) : 1;
+            currentPage_ = qBound(0, currentPage_, totalPages - 1);
+
+            const int totalColumns = actionIconsPerRow_ + (needsPaging ? 2 : 0);
+
+            const int startIndex = currentPage_ * slotsPerPage;
+            const int endIndex = qMin(totalActions, startIndex + slotsPerPage);
+            int actionOffset = 0;
+
+            for (int col = 0; col < totalColumns; ++col) {
+                QWidget *widget = nullptr;
+                if (startIndex + actionOffset < endIndex) {
+                    const int actionIndex = startIndex + actionOffset;
+                    widget = createActionButton(visibleActions_[actionIndex], actionIndex);
+                    actionOffset++;
+                } else if (needsPaging && col == totalColumns - 2) {
+                    widget = createNavButton(QStyle::SP_ArrowBack, "Previous actions", currentPage_ > 0, -1);
+                } else if (needsPaging && col == totalColumns - 1) {
+                    widget = createNavButton(QStyle::SP_ArrowForward, "Next actions", currentPage_ + 1 < totalPages, 1);
+                } else {
+                    widget = createSpacer();
+                }
+                grid_->addWidget(widget, 0, col);
             }
-            const int actionIndex = actionIndexVariant.toInt();
-            if (actionIndex < 0 || actionIndex >= actions_.size()) {
-                return;
+
+            adjustSize();
+        }
+
+        QWidget *createSpacer() {
+            auto *spacer = new QWidget(this);
+            spacer->setFixedSize(buttonSize_, buttonSize_);
+            return spacer;
+        }
+
+        QToolButton *createActionButton(const MenuAction &action, int index) {
+            auto *button = new QToolButton(this);
+            button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+            button->setAutoRaise(true);
+            button->setIcon(iconForAction(action));
+            button->setToolTip(action.label);
+            button->setFixedSize(buttonSize_, buttonSize_);
+            button->setIconSize(QSize(iconSize_, iconSize_));
+            connect(button, &QToolButton::clicked, this, [this, index]() {
+                if (index < 0 || index >= visibleActions_.size()) {
+                    return;
+                }
+                const MenuAction action = visibleActions_[index];
+                qInfo() << "Menu choice:" << action.label;
+                if (action.handler) {
+                    action.handler();
+                }
+                hide();
+            });
+            return button;
+        }
+
+        QToolButton *createNavButton(QStyle::StandardPixmap icon, const QString &tooltip, bool enabled, int delta) {
+            auto *button = new QToolButton(this);
+            button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+            button->setAutoRaise(true);
+            button->setIcon(style()->standardIcon(icon));
+            button->setToolTip(tooltip);
+            button->setEnabled(enabled);
+            button->setFixedSize(buttonSize_, buttonSize_);
+            button->setIconSize(QSize(iconSize_, iconSize_));
+            connect(button, &QToolButton::clicked, this, [this, delta]() {
+                currentPage_ += delta;
+                rebuildGrid();
+            });
+            return button;
+        }
+
+        QIcon iconForAction(const MenuAction &action) const {
+            QIcon icon = iconFromSpec(action.icon);
+            if (!icon.isNull()) {
+                return icon;
             }
-            qInfo() << "Menu choice:" << actions_[actionIndex].label;
-            if (actions_[actionIndex].handler) {
-                actions_[actionIndex].handler();
+            const QString key = action.label.toLower();
+            if (key.contains("uppercase")) {
+                return iconFromSpec("sp:SP_ArrowUp");
             }
-            hide();
+            if (key.contains("lowercase")) {
+                return iconFromSpec("sp:SP_ArrowDown");
+            }
+            if (key.contains("title")) {
+                return iconFromSpec("sp:SP_FileDialogDetailedView");
+            }
+            if (key.contains("normalize")) {
+                return iconFromSpec("sp:SP_BrowserReload");
+            }
+            if (key.contains("paste")) {
+                return iconFromSpec("sp:SP_DialogResetButton");
+            }
+            if (key.contains("copy")) {
+                return iconFromSpec("sp:SP_DialogOpenButton");
+            }
+            return iconFromSpec("sp:SP_FileIcon");
+        }
+
+        QIcon iconFromSpec(const QString &spec) const {
+            if (spec.isEmpty()) {
+                return QIcon();
+            }
+            if (spec.startsWith("sp:")) {
+                const QString name = spec.mid(3);
+                const QStyle::StandardPixmap pixmap = standardPixmapFromName(name);
+                if (pixmap != QStyle::SP_CustomBase) {
+                    return style()->standardIcon(pixmap);
+                }
+                return QIcon();
+            }
+            const QString filePath = resolveIconPath(spec);
+            if (!filePath.isEmpty()) {
+                return QIcon(filePath);
+            }
+            return QIcon::fromTheme(spec);
+        }
+
+        QString resolveIconPath(const QString &spec) const {
+            if (spec.startsWith("file:")) {
+                const QString localPath = QUrl(spec).toLocalFile();
+                if (QFileInfo::exists(localPath)) {
+                    return localPath;
+                }
+                return QString();
+            }
+            QString path = spec;
+            if (spec.startsWith("~")) {
+                path = QDir::homePath() + spec.mid(1);
+            }
+            if (QDir::isAbsolutePath(path) && QFileInfo::exists(path)) {
+                return path;
+            }
+            return QString();
+        }
+
+        QStyle::StandardPixmap standardPixmapFromName(const QString &name) const {
+            if (name == "SP_ArrowUp") {
+                return QStyle::SP_ArrowUp;
+            }
+            if (name == "SP_ArrowDown") {
+                return QStyle::SP_ArrowDown;
+            }
+            if (name == "SP_ArrowBack") {
+                return QStyle::SP_ArrowBack;
+            }
+            if (name == "SP_ArrowForward") {
+                return QStyle::SP_ArrowForward;
+            }
+            if (name == "SP_FileDialogDetailedView") {
+                return QStyle::SP_FileDialogDetailedView;
+            }
+            if (name == "SP_BrowserReload") {
+                return QStyle::SP_BrowserReload;
+            }
+            if (name == "SP_DialogResetButton") {
+                return QStyle::SP_DialogResetButton;
+            }
+            if (name == "SP_DialogOpenButton") {
+                return QStyle::SP_DialogOpenButton;
+            }
+            if (name == "SP_FileIcon") {
+                return QStyle::SP_FileIcon;
+            }
+            return QStyle::SP_CustomBase;
         }
 
     private:
-        QListWidget *list_ = nullptr;
+        QGridLayout *grid_ = nullptr;
         QList<MenuAction> actions_;
+        QList<MenuAction> visibleActions_;
         std::function<void()> onClosed_;
         QElapsedTimer showTimer_;
+        int currentPage_ = 0;
+        int actionIconsPerRow_ = 10;
+        int buttonSize_ = 30;
+        int iconSize_ = 20;
     };
 
     void showMenu(const QString &text) {
@@ -431,11 +655,12 @@ private:
             pollTimer_.stop();
         }
         QList<MenuAction> actions;
-        actions.append({"UPPERCASE", [this, text]() { setClipboardText(text.toUpper()); }});
-        actions.append({"lowercase", [this, text]() { setClipboardText(text.toLower()); }});
-        actions.append({"Title Case", [this, text]() { setClipboardText(toTitleCase(text)); }});
-        actions.append({"Normalize Whitespace", [this, text]() { setClipboardText(normalizeWhitespace(text)); }});
-        actions.append({"Copy to Clipboard", [this, text]() { setClipboardText(text); }});
+        actions.append({"UPPERCASE", [this, text]() { setClipboardText(text.toUpper()); }, true, "sp:SP_ArrowUp"});
+        actions.append({"lowercase", [this, text]() { setClipboardText(text.toLower()); }, true, "sp:SP_ArrowDown"});
+        actions.append({"Title Case", [this, text]() { setClipboardText(toTitleCase(text)); }, true, "sp:SP_FileDialogDetailedView"});
+        actions.append({"Normalize Whitespace", [this, text]() { setClipboardText(normalizeWhitespace(text)); }, true, "sp:SP_BrowserReload"});
+        actions.append({"Paste and Match Style", [this, text]() { setClipboardPlainText(text); }, true, "sp:SP_DialogResetButton"});
+        actions.append({"Copy to Clipboard", [this, text]() { setClipboardText(text); }, true, "sp:SP_DialogOpenButton"});
         // actions.append({"Search Google", [text]() {
         //     const QString query = QString::fromUtf8(QUrl::toPercentEncoding(text));
         //     QDesktopServices::openUrl(QUrl("https://www.google.com/search?q=" + query));
@@ -447,13 +672,11 @@ private:
 
         QList<ExternalAction> externals = loadExternalActions();
         if (!externals.isEmpty()) {
-            //actions.append({"Custom actions", nullptr, false});
-            actions.append({"----------------", nullptr, false});
             for (const ExternalAction &ext : externals) {
                 actions.append({ext.label, [ext, text]() {
                     const bool ok = QProcess::startDetached(ext.command, expandArgs(ext.args, text));
                     qInfo() << "External action" << ext.command << "started:" << ok;
-                }});
+                }, true, ext.icon});
             }
         }
 
@@ -467,6 +690,15 @@ private:
         lastText_ = text;
         qInfo() << "Setting clipboard text len=" << text.size();
         clipboard_->setText(text);
+    }
+
+    void setClipboardPlainText(const QString &text) {
+        suppressNext_ = true;
+        lastText_ = text;
+        qInfo() << "Setting clipboard plain text len=" << text.size();
+        auto *mime = new QMimeData();
+        mime->setText(text);
+        clipboard_->setMimeData(mime, QClipboard::Clipboard);
     }
 
     void logClipboardState(const char *prefix, QClipboard::Mode mode) {
@@ -551,9 +783,13 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     QApplication::setQuitOnLastWindowClosed(false);
 
+    const AppSettings settings = loadSettings();
+    gMinLogLevel = logLevelFromString(settings.logLevel);
+    gPrevLogHandler = qInstallMessageHandler(logHandler);
+
     qInfo() << "codexpopclip started. Platform:" << QGuiApplication::platformName();
 
-    PopupController controller;
+    PopupController controller(settings);
     return app.exec();
 }
 

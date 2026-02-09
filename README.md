@@ -67,7 +67,9 @@ Create `~/.config/codexpopclip/settings.json`:
   "poll": true,
   "poll_ms": 1500,
   "wlpaste": true,
-  "wlpaste_mode": "primary"
+  "wlpaste_mode": "primary",
+  "icons_per_row": 10,
+  "log_level": "info"
 }
 ```
 
@@ -87,15 +89,45 @@ Example:
     {
       "label": "Search DuckDuckGo",
       "command": "xdg-open",
-      "args": ["https://duckduckgo.com/?q={text}"]
+      "args": ["https://duckduckgo.com/?q={text}"],
+      "icon": "system-search"
     },
     {
       "label": "Send to My Script",
       "command": "/home/user/bin/my-script",
-      "args": ["--input", "{text}"]
+      "args": ["--input", "{text}"],
+      "icon": "document-send"
     }
   ]
 }
 ```
 
 `{text}` is replaced with the selected text.
+`icon` supports theme icon names (via `QIcon::fromTheme`), Qt standard pixmaps
+with the `sp:` prefix (example: `sp:SP_ArrowUp`), or a local file icon via an
+absolute path or `file://` URL (example: `/home/user/icons/google.png`).
+
+
+to fetch icons from websites, you can use this script, but respect copyright!
+
+```
+set -e
+icon_dir="$HOME/.config/codexpopclip/icons"
+mkdir -p "$icon_dir"
+
+curl -L -o "$icon_dir/google.ico" "https://www.google.com/favicon.ico"
+curl -L -o "$icon_dir/amazon.ico" "https://www.amazon.com/favicon.ico"
+curl -L -o "$icon_dir/duckduckgo.ico" "https://duckduckgo.com/favicon.ico"
+
+if command -v convert >/dev/null 2>&1; then
+  for f in "$icon_dir"/*.ico; do
+    convert "$f[0]" -resize 32x32 "${f%.ico}.png"
+  done
+elif command -v magick >/dev/null 2>&1; then
+  for f in "$icon_dir"/*.ico; do
+    magick "$f[0]" -resize 32x32 "${f%.ico}.png"
+  done
+else
+  echo "No ImageMagick found; keeping .ico files only."
+fi
+```
