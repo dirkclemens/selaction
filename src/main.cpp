@@ -73,7 +73,7 @@ QString toTitleCase(const QString &text) {
 QList<ExternalAction> loadExternalActions() {
     QList<ExternalAction> actions;
     const QString configDir = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
-    const QString configPath = configDir + "/codexpopclip/actions.json";
+    const QString configPath = configDir + "/selaction/actions.json";
 
     QFile file(configPath);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -135,7 +135,7 @@ QString previewText(const QString &text) {
 AppSettings loadSettings() {
     AppSettings settings;
     const QString configDir = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
-    const QString configPath = configDir + "/codexpopclip/settings.json";
+    const QString configPath = configDir + "/selaction/settings.json";
 
     QFile file(configPath);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -279,20 +279,20 @@ public:
         connect(&debounce_, &QTimer::timeout, this, &PopupController::showMenuIfNeeded);
 
         AppSettings effective = settings;
-        if (qEnvironmentVariableIsSet("CODEXPOPCLIP_POLL")) {
+        if (qEnvironmentVariableIsSet("SELACTION_POLL")) {
             effective.pollEnabled = true;
         }
-        if (qEnvironmentVariableIsSet("CODEXPOPCLIP_POLL_MS")) {
-            const int value = qEnvironmentVariableIntValue("CODEXPOPCLIP_POLL_MS");
+        if (qEnvironmentVariableIsSet("SELACTION_POLL_MS")) {
+            const int value = qEnvironmentVariableIntValue("SELACTION_POLL_MS");
             if (value > 0) {
                 effective.pollIntervalMs = value;
             }
         }
-        if (qEnvironmentVariableIsSet("CODEXPOPCLIP_WLPASTE")) {
+        if (qEnvironmentVariableIsSet("SELACTION_WLPASTE")) {
             effective.wlPasteEnabled = true;
         }
-        if (qEnvironmentVariableIsSet("CODEXPOPCLIP_WLPASTE_MODE")) {
-            const QString mode = qEnvironmentVariable("CODEXPOPCLIP_WLPASTE_MODE", effective.wlPasteMode);
+        if (qEnvironmentVariableIsSet("SELACTION_WLPASTE_MODE")) {
+            const QString mode = qEnvironmentVariable("SELACTION_WLPASTE_MODE", effective.wlPasteMode);
             if (!mode.isEmpty()) {
                 effective.wlPasteMode = mode;
             }
@@ -303,7 +303,7 @@ public:
         wlPasteEnabled_ = effective.wlPasteEnabled;
         wlPasteMode_ = effective.wlPasteMode;
         popup_.setActionIconsPerRow(effective.actionIconsPerRow);
-        traceEnabled_ = qEnvironmentVariableIsSet("CODEXPOPCLIP_TRACE");
+        traceEnabled_ = qEnvironmentVariableIsSet("SELACTION_TRACE");
         if (pollEnabled_) {
             pollTimer_.setInterval(pollIntervalMs_);
             connect(&pollTimer_, &QTimer::timeout, this, &PopupController::pollClipboard);
@@ -545,24 +545,33 @@ private:
             }
             const QString key = action.label.toLower();
             if (key.contains("uppercase")) {
-                return iconFromSpec("sp:SP_ArrowUp");
+                return themeIcon({"format-text-uppercase", "format-text-bold", "format-text"});
             }
             if (key.contains("lowercase")) {
-                return iconFromSpec("sp:SP_ArrowDown");
+                return themeIcon({"format-text-lowercase", "format-text-italic", "format-text"});
             }
             if (key.contains("title")) {
-                return iconFromSpec("sp:SP_FileDialogDetailedView");
+                return themeIcon({"format-text-titlecase", "format-text-underline", "format-text"});
             }
             if (key.contains("normalize")) {
-                return iconFromSpec("sp:SP_BrowserReload");
+                return themeIcon({"edit-clear", "view-refresh"});
             }
             if (key.contains("paste")) {
-                return iconFromSpec("sp:SP_DialogResetButton");
+                return themeIcon({"edit-paste"});
             }
             if (key.contains("copy")) {
-                return iconFromSpec("sp:SP_DialogOpenButton");
+                return themeIcon({"edit-copy"});
             }
-            return iconFromSpec("sp:SP_FileIcon");
+            return themeIcon({"text-x-generic", "text-plain", "text"});
+        }
+
+        QIcon themeIcon(const QStringList &names) const {
+            for (const QString &name : names) {
+                if (QIcon::hasThemeIcon(name)) {
+                    return QIcon::fromTheme(name);
+                }
+            }
+            return QIcon();
         }
 
         QIcon iconFromSpec(const QString &spec) const {
@@ -580,6 +589,9 @@ private:
             const QString filePath = resolveIconPath(spec);
             if (!filePath.isEmpty()) {
                 return QIcon(filePath);
+            }
+            if (spec.startsWith("file:") || spec.startsWith("~") || QDir::isAbsolutePath(spec)) {
+                return QIcon();
             }
             return QIcon::fromTheme(spec);
         }
@@ -655,20 +667,12 @@ private:
             pollTimer_.stop();
         }
         QList<MenuAction> actions;
-        actions.append({"UPPERCASE", [this, text]() { setClipboardText(text.toUpper()); }, true, "sp:SP_ArrowUp"});
-        actions.append({"lowercase", [this, text]() { setClipboardText(text.toLower()); }, true, "sp:SP_ArrowDown"});
-        actions.append({"Title Case", [this, text]() { setClipboardText(toTitleCase(text)); }, true, "sp:SP_FileDialogDetailedView"});
-        actions.append({"Normalize Whitespace", [this, text]() { setClipboardText(normalizeWhitespace(text)); }, true, "sp:SP_BrowserReload"});
-        actions.append({"Paste and Match Style", [this, text]() { setClipboardPlainText(text); }, true, "sp:SP_DialogResetButton"});
-        actions.append({"Copy to Clipboard", [this, text]() { setClipboardText(text); }, true, "sp:SP_DialogOpenButton"});
-        // actions.append({"Search Google", [text]() {
-        //     const QString query = QString::fromUtf8(QUrl::toPercentEncoding(text));
-        //     QDesktopServices::openUrl(QUrl("https://www.google.com/search?q=" + query));
-        // }});
-        // actions.append({"Search Amazon", [text]() {
-        //     const QString query = QString::fromUtf8(QUrl::toPercentEncoding(text));
-        //     QDesktopServices::openUrl(QUrl("https://www.amazon.com/s?k=" + query));
-        // }});
+        actions.append({"UPPERCASE", [this, text]() { setClipboardText(text.toUpper()); }, true, "format-text-uppercase"});
+        actions.append({"lowercase", [this, text]() { setClipboardText(text.toLower()); }, true, "format-text-lowercase"});
+        actions.append({"Title Case", [this, text]() { setClipboardText(toTitleCase(text)); }, true, "format-text-titlecase"});
+        actions.append({"Normalize Whitespace", [this, text]() { setClipboardText(normalizeWhitespace(text)); }, true, "edit-clear"});
+        actions.append({"Paste and Match Style", [this, text]() { setClipboardPlainText(text); }, true, "edit-paste"});
+        actions.append({"Copy to Clipboard", [this, text]() { setClipboardText(text); }, true, "edit-copy"});
 
         QList<ExternalAction> externals = loadExternalActions();
         if (!externals.isEmpty()) {
@@ -787,7 +791,7 @@ int main(int argc, char *argv[]) {
     gMinLogLevel = logLevelFromString(settings.logLevel);
     gPrevLogHandler = qInstallMessageHandler(logHandler);
 
-    qInfo() << "codexpopclip started. Platform:" << QGuiApplication::platformName();
+    qInfo() << "selaction started. Platform:" << QGuiApplication::platformName();
 
     PopupController controller(settings);
     return app.exec();

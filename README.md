@@ -1,4 +1,4 @@
-# codexpopclip
+# selaction
 
 Small Qt6 daemon-like app for KDE Plasma (Wayland) that watches clipboard/selection changes and shows a popup menu with text actions.
 
@@ -12,18 +12,18 @@ cmake --build build
 ## Run
 
 ```bash
-./build/codexpopclip
+./build/selaction
 ```
 
 ## Autostart (KDE Plasma)
 
-Create `~/.config/autostart/codexpopclip.desktop`:
+Create `~/.config/autostart/selaction.desktop`:
 
 ```ini
 [Desktop Entry]
 Type=Application
-Name=codexpopclip
-Exec=/home/user/Projekte/cpp/codexpopclip/build/codexpopclip
+Name=selaction
+Exec=/home/user/Projekte/cpp/selaction/build/selaction
 X-KDE-autostart-after=panel
 ```
 
@@ -38,29 +38,29 @@ For debugging you can enable polling (every 500ms) to detect changes even if
 signals are missing:
 
 ```bash
-CODEXPOPCLIP_POLL=1 ./build/codexpopclip
+SELACTION_POLL=1 ./build/selaction
 ```
 
 If Qt cannot read clipboard contents under Wayland, you can enable a fallback
 using `wl-paste` (requires `wl-clipboard`):
 
 ```bash
-CODEXPOPCLIP_POLL=1 CODEXPOPCLIP_WLPASTE=1 ./build/codexpopclip
+SELACTION_POLL=1 SELACTION_WLPASTE=1 ./build/selaction
 ```
 
 To reduce polling side effects (e.g. flicker), you can slow down polling and
 limit wl-paste to primary selection only:
 
 ```bash
-CODEXPOPCLIP_POLL=1 CODEXPOPCLIP_POLL_MS=1500 CODEXPOPCLIP_WLPASTE=1 \
-  CODEXPOPCLIP_WLPASTE_MODE=primary ./build/codexpopclip
+SELACTION_POLL=1 SELACTION_POLL_MS=1500 SELACTION_WLPASTE=1 \
+  SELACTION_WLPASTE_MODE=primary ./build/selaction
 ```
 
-`CODEXPOPCLIP_WLPASTE_MODE` accepts: `primary`, `clipboard`, `both`.
+`SELACTION_WLPASTE_MODE` accepts: `primary`, `clipboard`, `both`.
 
 ## Settings config
 
-Create `~/.config/codexpopclip/settings.json`:
+Create `~/.config/selaction/settings.json`:
 
 ```json
 {
@@ -79,7 +79,7 @@ Environment variables still work and override the file when set.
 
 Create the config file:
 
-`~/.config/codexpopclip/actions.json`
+`~/.config/selaction/actions.json`
 
 Example:
 
@@ -112,7 +112,7 @@ to fetch icons from websites, you can use this script, but respect copyright!
 
 ```
 set -e
-icon_dir="$HOME/.config/codexpopclip/icons"
+icon_dir="$HOME/.config/selaction/icons"
 mkdir -p "$icon_dir"
 
 curl -L -o "$icon_dir/google.ico" "https://www.google.com/favicon.ico"

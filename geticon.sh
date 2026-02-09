@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-icon_dir="$HOME/.config/codexpopclip/icons"
+icon_dir="$HOME/.config/selaction/icons"
 mkdir -p "$icon_dir"
 
 if [ -z "$1" ]; then
